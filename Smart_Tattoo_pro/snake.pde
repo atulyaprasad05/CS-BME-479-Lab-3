@@ -43,7 +43,7 @@ class SnakeGame {
   int dir, nextDir;
   boolean alive;
   int score;
-  int stepMillis = 150;      // time between moves
+  int stepMillis = 500;      // time between moves
   int lastStep;
 
   SnakeGame(int cols, int rows) {
