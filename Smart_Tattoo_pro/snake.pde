@@ -35,7 +35,7 @@ class Pair {
 
 class SnakeGame {
   // directions, clockwise so turnRight = +1, turnLeft = -1
-  static final int UP = 0, RIGHT = 1, DOWN = 2, LEFT = 3;
+  final int UP = 0, RIGHT = 1, DOWN = 2, LEFT = 3;
 
   int cols, rows;
   ArrayList<Pair> body = new ArrayList<Pair>();   // body.get(0) = head
@@ -79,12 +79,12 @@ class SnakeGame {
 
   // Call from keyPressed(): arrows or WASD; R restarts after game over
   void handleKey(char k, int kc) {
-    if (kc == UP    || k == 'w' || k == 'W') setDirection(UP);
-    if (kc == RIGHT || k == 'd' || k == 'D') setDirection(RIGHT);
-    if (kc == DOWN  || k == 's' || k == 'S') setDirection(DOWN);
-    if (kc == LEFT  || k == 'a' || k == 'A') setDirection(LEFT);
-    if (k == 'r' || k == 'R') reset();
-  }
+  if (kc == PApplet.UP    || k == 'w' || k == 'W') setDirection(UP);
+  if (kc == PApplet.RIGHT || k == 'd' || k == 'D') setDirection(RIGHT);
+  if (kc == PApplet.DOWN  || k == 's' || k == 'S') setDirection(DOWN);
+  if (kc == PApplet.LEFT  || k == 'a' || k == 'A') setDirection(LEFT);
+  if (k == 'r' || k == 'R') reset();
+}
 
   // ---------- LOGIC ----------
 
@@ -112,7 +112,7 @@ class SnakeGame {
     // wall collision
     if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) { alive = false; return; }
 
-    boolean eating = (nx == food.x && ny == food.y);
+    boolean eating = (food != null && nx == food.x && ny == food.y);
 
     // self collision (tail will move away unless we're eating)
     int checkLen = eating ? body.size() : body.size() - 1;
@@ -131,7 +131,7 @@ class SnakeGame {
   }
 
   void placeFood() {
-    if (body.size() >= cols * rows) { alive = false; return; }  // board full = win
+    if (body.size() >= cols * rows) { food = null; alive = false; return; }
     while (true) {
       Pair f = new Pair((int) random(cols), (int) random(rows));
       boolean clash = false;
@@ -152,7 +152,7 @@ class SnakeGame {
     return out;
   }
 
-  Pair getFood() { return new Pair(food.x, food.y); }
+  Pair getFood() { return food == null ? null : new Pair(food.x, food.y); }
 
   boolean isAlive() { return alive; }
   int getScore()    { return score; }
@@ -163,9 +163,13 @@ class SnakeGame {
     fill(240);
     rect(x0, y0, cols * cell, rows * cell);
 
-    fill(220, 40, 40);
-    rect(x0 + food.x * cell, y0 + food.y * cell, cell, cell);
+    // food (skip if the board is full)
+    if (food != null) {
+      fill(220, 40, 40);
+      rect(x0 + food.x * cell, y0 + food.y * cell, cell, cell);
+    }
 
+    // snake body: head is darker green
     for (int i = 0; i < body.size(); i++) {
       Pair p = body.get(i);
       fill(i == 0 ? color(0, 120, 0) : color(40, 180, 60));
@@ -178,7 +182,7 @@ class SnakeGame {
       fill(255);
       textAlign(CENTER, CENTER);
       textSize(20);
-      text("Game over — score " + score + "\nPress R to restart",
+      text((food == null ? "You win" : "Game over") + " — score " + score + "\nPress R to restart",
            x0 + cols * cell / 2, y0 + rows * cell / 2);
       textAlign(LEFT, BASELINE);
     }

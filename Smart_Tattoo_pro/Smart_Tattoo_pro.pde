@@ -2,39 +2,51 @@
  * 02 — Interaction Basics
  * Teaches: mouse & keys, state machine, functions returning values
  */
+import processing.serial.*;
+
 SnakeGame snake;
+Serial port;
+
+int touchBits = 0;
+int flexPercent = 0;
 
 int mode = 0; // 0=paint, 1=erase
 color paintColor = color(220, 40, 90);
-
-pair<int, bool> buttonPressed = new ;
+int buttonId = -1;
+boolean buttonDown = false;
 
 void setup() {
-  size(800, 480);
+  size(800, 480);                 // must be first
+  frameRate(60);
   background(255);
   surface.setTitle("02 — Interaction Basics");
-}
 
-void setup () {
-  frameRate(60);
   snake = new SnakeGame(20, 12);
 
-
-  for (String f : dataFields) series.put(f, new ArrayList<Float>());
   String[] ports = Serial.list();
   printArray(ports);
-  if (serialPortIndex < ports.length) {
-    port = new Serial(this, ports[serialPortIndex], 115200);
-    port.clear();
+  if (ports.length > 1) {         // change 1 to your Arduino's index
+    port = new Serial(this, ports[1], 115200);
+    port.bufferUntil('\n');
+  } else {
+    println("No Arduino found, running without serial");
   }
+}
 
-  paletteColors = new color[] {red, orange, yellow, green, blue, black, color(255)};
-  paint = createGraphics(canvasW, canvasH);
+  //String[] ports = Serial.list();
+  //printArray(ports);
+  //if (serialPortIndex < ports.length) {
+  //  port = new Serial(this, ports[serialPortIndex], 115200);
+  //  port.clear();
+  //}
+
+  //paletteColors = new color[] {red, orange, yellow, green, blue, black, color(255)};
+  //paint = createGraphics(canvasW, canvasH);
 
   // fonts
-  headerFont = createFont("AveriaSerifLibre-Regular.ttf", 32);
-  mainFont  = createFont("ShareTech-Regular.ttf", 20);
-}
+  //headerFont = createFont("AveriaSerifLibre-Regular.ttf", 32);
+  //mainFont  = createFont("ShareTech-Regular.ttf", 20);
+
 
 
 
@@ -47,9 +59,19 @@ void draw() {
     line(pmouseX, pmouseY, mouseX, mouseY);
   }
   snake.update();
-  Pair[] body = snake.getSnake();
-  Pair food = snake.getFood();
   snake.display(0, 40, 24);   // optional built-in renderer
+}
+
+void serialEvent(Serial p) {
+  String line = p.readStringUntil('\n');
+  if (line == null) return;
+  line = trim(line);
+  // e.g. "5,42"  ->  touchBits, flexPercent
+  String[] parts = split(line, ',');
+  if (parts.length == 2) {
+    touchBits = int(parts[0]);
+    flexPercent = int(parts[1]);
+  }
 }
 
 void keyPressed() {
@@ -58,6 +80,15 @@ void keyPressed() {
   if (key == 'c' || key == 'C') background(255);
   snake.handleKey(key, keyCode);
 
+}
+
+void mousePressed() {
+  buttonId = mouseButton;
+  buttonDown = true;
+}
+
+void mouseReleased() {
+  buttonDown = false;
 }
 
 void drawHUD() {
