@@ -1,0 +1,120 @@
+/*
+ * ADS TATTOO - control the computer's mouse from the tattoo buttons
+ *
+ * Arduino (Smart_Tattoo_ard) sends one int per line when a pad is newly touched:
+ *   0 = button 0
+ *   1 = button 1
+ *
+ * buttonActions maps each button to an action, so a settings app can
+ * change the bindings later without touching the serial/Robot code.
+ *
+ * macOS: the first run needs Accessibility permission for Processing
+ * (System Settings > Privacy & Security > Accessibility), otherwise
+ * Robot calls silently do nothing.
+ */
+
+import processing.serial.*;
+import java.awt.Robot;
+import java.awt.MouseInfo;
+import java.awt.Point;
+import java.awt.event.InputEvent;
+0`
+final String MOVE_LEFT   = "MOVE_LEFT";
+final String MOVE_RIGHT  = "MOVE_RIGHT";
+final String MOVE_UP     = "MOVE_UP";
+final String MOVE_DOWN   = "MOVE_DOWN";
+final String LEFT_CLICK  = "LEFT_CLICK";
+final String RIGHT_CLICK = "RIGHT_CLICK";
+
+String[] buttonActions = { MOVE_LEFT, LEFT_CLICK };
+
+int moveStep = 50;
+
+Serial port;
+Robot robot;
+String lastEvent = "waiting for input...";
+
+
+void setup() {
+  size(400, 200);
+  surface.setTitle("ADS Tattoo - Mouse Control");
+
+  try {
+    robot = new Robot();
+  } catch (Exception e) {
+    println("Could not create Robot: " + e);
+    exit();
+  }
+
+  printArray(Serial.list());
+  port = new Serial(this, findArduinoPort(), 115200);
+  port.bufferUntil('\n');
+  port.clear();
+}
+
+
+void draw() {
+  background(255);
+  fill(20);
+  textSize(16);
+  text("ADS TATTOO - MOUSE CONTROL", 20, 30);
+  textSize(14);
+  for (int i = 0; i < buttonActions.length; i++) {
+    text("Button " + i + ": " + buttonActions[i], 20, 70 + i * 22);
+  }
+  text("Last: " + lastEvent, 20, 170);
+}
+
+
+// Picks the first USB serial device (macOS names), falling back to the first port
+String findArduinoPort() {
+  for (String name : Serial.list()) {
+    if (name.contains("usbmodem") || name.contains("usbserial")) return name;
+  }
+  return Serial.list()[0];
+}
+
+
+void serialEvent(Serial p) {
+  String line = p.readStringUntil('\n');
+  if (line == null) return;
+  line = trim(line);
+  if (line.length() == 0) return;
+
+  int button = int(line);
+  if (button < 0 || button >= buttonActions.length) return;
+
+  String action = buttonActions[button];
+  runAction(action);
+  lastEvent = "button " + button + " -> " + action;
+  println(lastEvent);
+}
+
+
+void runAction(String action) {
+  Point pos = MouseInfo.getPointerInfo().getLocation();
+
+  if (action.equals(MOVE_LEFT))        robot.mouseMove(pos.x - moveStep, pos.y);
+  else if (action.equals(MOVE_RIGHT))  robot.mouseMove(pos.x + moveStep, pos.y);
+  else if (action.equals(MOVE_UP))     robot.mouseMove(pos.x, pos.y - moveStep);
+  else if (action.equals(MOVE_DOWN))   robot.mouseMove(pos.x, pos.y + moveStep);
+  else if (action.equals(LEFT_CLICK))  click(InputEvent.BUTTON1_DOWN_MASK);
+  else if (action.equals(RIGHT_CLICK)) click(InputEvent.BUTTON3_DOWN_MASK);
+}
+
+
+void click(int buttonMask) {
+  robot.mousePress(buttonMask);
+  robot.delay(20);
+  robot.mouseRelease(buttonMask);
+}
+
+
+// Keyboard testing without the Arduino: '0' and '1' act like the pads
+void keyPressed() {
+  int button = key - '0';
+  if (button >= 0 && button < buttonActions.length) {
+    runAction(buttonActions[button]);
+    lastEvent = "key " + key + " -> " + buttonActions[button];
+  }
+}
