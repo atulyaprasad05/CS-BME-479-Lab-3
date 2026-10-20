@@ -5,6 +5,7 @@
 import processing.serial.*;
 
 SnakeGame snake;
+RobotMouse rmouse;
 Serial port;
 
 int touchBits = 0;
@@ -22,6 +23,7 @@ void setup() {
   surface.setTitle("02 — Interaction Basics");
 
   snake = new SnakeGame(20, 12);
+  rmouse = new RobotMouse();      // create before opening serial
 
   String[] ports = Serial.list();
   printArray(ports);
@@ -33,23 +35,6 @@ void setup() {
   }
 }
 
-  //String[] ports = Serial.list();
-  //printArray(ports);
-  //if (serialPortIndex < ports.length) {
-  //  port = new Serial(this, ports[serialPortIndex], 115200);
-  //  port.clear();
-  //}
-
-  //paletteColors = new color[] {red, orange, yellow, green, blue, black, color(255)};
-  //paint = createGraphics(canvasW, canvasH);
-
-  // fonts
-  //headerFont = createFont("AveriaSerifLibre-Regular.ttf", 32);
-  //mainFont  = createFont("ShareTech-Regular.ttf", 20);
-
-
-
-
 void draw() {
   drawHUD();
   if (mousePressed) {
@@ -58,15 +43,20 @@ void draw() {
     strokeWeight(12);
     line(pmouseX, pmouseY, mouseX, mouseY);
   }
+  rmouse.update();                // move the OS mouse from held buttons
   snake.update();
-  snake.display(0, 40, 24);   // optional built-in renderer
+  snake.display(0, 40, 24);       // optional built-in renderer
 }
 
 void serialEvent(Serial p) {
   String line = p.readStringUntil('\n');
   if (line == null) return;
   line = trim(line);
-  // e.g. "5,42"  ->  touchBits, flexPercent
+
+  // "0 pressed", "0 released", ... "3 released"
+  if (rmouse.handleSerialLine(line)) return;
+
+  // otherwise, old format e.g. "5,42" -> touchBits, flexPercent
   String[] parts = split(line, ',');
   if (parts.length == 2) {
     touchBits = int(parts[0]);
@@ -78,8 +68,8 @@ void keyPressed() {
   if (key == 'e' || key == 'E') mode = 1;
   if (key == 'p' || key == 'P') mode = 0;
   if (key == 'c' || key == 'C') background(255);
+  if (key == 'm' || key == 'M') rmouse.toggle();   // enable/disable Robot mouse
   snake.handleKey(key, keyCode);
-
 }
 
 void mousePressed() {
@@ -91,11 +81,18 @@ void mouseReleased() {
   buttonDown = false;
 }
 
+// make sure no mouse button is left stuck down when the sketch closes
+void exit() {
+  rmouse.releaseAll();
+  super.exit();
+}
+
 void drawHUD() {
   noStroke();
   fill(255, 240);
   rect(0, 0, width, 36);
   fill(20);
   textSize(14);
-  text("Press P=paint, E=erase, C=clear • mode = " + (mode==0?"PAINT":"ERASE"), 10, 24);
+  text("Press P=paint, E=erase, C=clear, M=robot mouse • mode = " + (mode==0?"PAINT":"ERASE")
+       + " • robot = " + (rmouse.enabled ? "ON" : "OFF"), 10, 24);
 }
