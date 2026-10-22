@@ -7,7 +7,7 @@
 
 Adafruit_MPR121 cap = Adafruit_MPR121();
 
-const int NUM_BUTTONS = 8;
+const int NUM_BUTTONS = 10;
 
 // Difference required before switching from one
 // touched pad to another nearby pad

@@ -1,29 +1,30 @@
 /*
- * ADS TATTOO - TUTORIAL
+ * ADS TATTOO
  *
- * Teaches a new user the tattoo buttons, step by step:
+ * Live display of the tattoo buttons, laid out like the tattoo:
+ *     o  o        circles: Enter, Tab, Space, Scroll toggle
+ *     o  o
+ *    [ ][ ]       squares: left click, right click
+ *      ^
+ *    <   >        arrows: move the mouse pointer
+ *      v
+ * Each button lights up while it is held. Right click a button on screen to
+ * change what that tattoo pad does.
+ *
+ * The Tutorial button in the top-right corner starts a walkthrough:
  *   1-4  move the pointer up / down / left / right onto a target circle
- *   5    left click and right click
- *   6    left toggle / right toggle cycle through all 10 buttons
- *   7    toggle to the RIGHT SQUARE, then right click to change that button
- *   8    press a keyboard key -> that button now sends that key
- *   then free play: remap any button, press S to save bindings.txt
+ *   5    left click and right click (the squares)
+ *   6    press each of the four circles
+ * During the tutorial only pointer movement is real; clicks and keys are
+ * simulated so it never clicks or types on your desktop.
  *
- * Put this file in a folder named ADS_Tattoo_Tutorial (Processing needs the
- * folder and the .pde to share a name), then run it.
+ * Arduino sends one line per change: "B,button,state"   e.g. "B,0,1" then "B,0,0"
+ * ("button,state" also works; "F,<flex>" lines are ignored)
+ * Button number = MPR121 electrode = index in buttonActions:
+ *   0 up  1 left  2 right  3 down  4 left square  5 right square
+ *   6 top-left circle  7 top-right circle  8 bottom-left circle  9 bottom-right circle
  *
- * Arduino sends one line per change: "button,state"   e.g. "0,1" then "0,0"
- * Button number = index in buttonActions below (same order as the shapes):
- *   0 up  1 left  2 right  3 down  4 left circle  5 right circle
- *   6 left square  7 right square  8 left rectangle  9 right rectangle
- * Reorder buttonActions if your wiring is different.
- *
- * Only pointer MOVEMENT is real here (java.awt.Robot). Clicks and keys are
- * simulated, so the tutorial never clicks or types on your desktop.
- *
- * Keyboard testing without the Arduino:
- *   0-9 act like the buttons, LEFT/RIGHT arrows = toggles, ENTER = right click.
- *   While waiting for a new key, any key (including Esc and digits) is captured.
+ * Keyboard testing without the Arduino: keys 0-9 act like the buttons.
  */
 
 import processing.serial.*;
@@ -31,35 +32,58 @@ import java.awt.Robot;
 import java.awt.MouseInfo;
 import java.awt.Point;
 import java.awt.Component;
+import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 // ---------------------------------------------------------------
-// BUTTON TABLE  (index = Arduino button number = shape number)
+// BUTTON TABLE  (index = Arduino button number)
 // Actions: MOVE_UP/DOWN/LEFT/RIGHT, LEFT_CLICK, RIGHT_CLICK,
-//          TOGGLE_LEFT, TOGGLE_RIGHT, KEY:<java keycode>
+//          SCROLL_TOGGLE, KEY:<java keycode>
 // ---------------------------------------------------------------
 String[] buttonActions = {
   "MOVE_UP", "MOVE_LEFT", "MOVE_RIGHT", "MOVE_DOWN",
   "LEFT_CLICK", "RIGHT_CLICK",
-  "KEY:27", "KEY:10",                    // left square = Esc, right square = Enter
-  "TOGGLE_LEFT", "TOGGLE_RIGHT"
+  "KEY:10", "KEY:9", "KEY:32", "SCROLL_TOGGLE"   // Enter, Tab, Space, scroll
 };
 
 String[] shapeNames = {
   "Up arrow", "Left arrow", "Right arrow", "Down arrow",
-  "Left circle", "Right circle",
   "Left square", "Right square",
-  "Left rectangle", "Right rectangle"
+  "Top-left circle", "Top-right circle", "Bottom-left circle", "Bottom-right circle"
 };
 
 final int NUM_BUTTONS = 10;
-final int BTN_RIGHT_SQUARE = 7;
+final int FIRST_CIRCLE = 6;
 
 boolean[] held = new boolean[NUM_BUTTONS];
-int[] flashAt = new int[NUM_BUTTONS];
+String[] realDown = new String[NUM_BUTTONS];   // action actually pressed on the desktop
+float[] bx = new float[NUM_BUTTONS];
+float[] by = new float[NUM_BUTTONS];
+final float PAD_SIZE = 56;
 
 int moveSpeed = 8;   // pixels per frame while held (60 fps)
+boolean scrollDown = true;   // flipped by SCROLL_TOGGLE; scrolling itself comes later
+
+// ---------------------------------------------------------------
+// REMAP MENU
+// ---------------------------------------------------------------
+String[] menuLabels = {
+  "Move up", "Move down", "Move left", "Move right",
+  "Left click", "Right click", "Scroll toggle",
+  "Enter", "Tab", "Space", "Esc", "Press a key..."
+};
+String[] menuActions = {
+  "MOVE_UP", "MOVE_DOWN", "MOVE_LEFT", "MOVE_RIGHT",
+  "LEFT_CLICK", "RIGHT_CLICK", "SCROLL_TOGGLE",
+  "KEY:10", "KEY:9", "KEY:32", "KEY:27", null
+};
+final int MENU_W = 170;
+final int ITEM_H = 26;
+
+int menuFor = -1;      // button the menu is open for
+int menuX, menuY;
+int capturing = -1;    // button waiting for a key press
 
 // ---------------------------------------------------------------
 // TUTORIAL STATE
@@ -69,11 +93,9 @@ final int S_DOWN = 1;
 final int S_LEFT = 2;
 final int S_RIGHT = 3;
 final int S_CLICK = 4;
-final int S_TOGGLE = 5;
-final int S_SELECT = 6;
-final int S_WAIT_KEY = 7;
-final int S_FREE = 8;
+final int S_CIRCLES = 5;
 
+boolean tutorial = false;
 int state = S_UP;
 boolean celebrating = false;
 int celebrateStart = 0;
@@ -81,14 +103,12 @@ String celebrateText = "Great job!";
 
 boolean gotLeftClick = false;
 boolean gotRightClick = false;
-boolean usedToggleL = false;
-boolean usedToggleR = false;
+int[] clickFlashAt = new int[2];
+boolean[] gotCircle = new boolean[4];
 
-int selected = 0;        // shape currently highlighted by the toggles
-int remapTarget = -1;    // button being remapped
 String msg = "";
 String lastEvent = "waiting for input...";
-boolean needCenter = true;
+boolean needCenter = false;
 
 Serial port;
 Robot robot;
@@ -101,7 +121,19 @@ ConcurrentLinkedQueue<int[]> events = new ConcurrentLinkedQueue<int[]>();
 void setup() {
   size(1000, 640);
   frameRate(60);
-  surface.setTitle("ADS Tattoo - Tutorial");
+  surface.setTitle("ADS Tattoo");
+
+  float cx = width / 2.0;
+  bx[0] = cx;      by[0] = 420;   // up
+  bx[1] = cx - 80; by[1] = 490;   // left
+  bx[2] = cx + 80; by[2] = 490;   // right
+  bx[3] = cx;      by[3] = 560;   // down
+  bx[4] = cx - 60; by[4] = 340;   // squares
+  bx[5] = cx + 60; by[5] = 340;
+  bx[6] = cx - 60; by[6] = 180;   // circles
+  bx[7] = cx + 60; by[7] = 180;
+  bx[8] = cx - 60; by[8] = 260;
+  bx[9] = cx + 60; by[9] = 260;
 
   try {
     robot = new Robot();
@@ -111,7 +143,8 @@ void setup() {
   }
 
   printArray(Serial.list());
-  String name = findArduinoPort();
+  String[] ports = Serial.list();
+  String name = ports.length > 2 ? ports[2] : null;   // change the index if the Arduino is on a different port
   if (name != null) {
     try {
       port = new Serial(this, name, 115200);
@@ -126,16 +159,6 @@ void setup() {
 }
 
 
-String findArduinoPort() {
-  String[] list = Serial.list();
-  for (String n : list) {
-    if (n.contains("usbmodem") || n.contains("usbserial") ||
-        n.contains("ttyACM") || n.contains("ttyUSB")) return n;
-  }
-  return list.length > 0 ? list[0] : null;
-}
-
-
 // ===============================================================
 // DRAW
 // ===============================================================
@@ -145,13 +168,46 @@ void draw() {
   Point origin = canvasOrigin();
 
   // put the pointer in the middle of the window at the start of each move step
-  if (needCenter && origin != null && robot != null && frameCount > 5) {
+  if (tutorial && needCenter && origin != null && robot != null && frameCount > 5) {
     robot.mouseMove(origin.x + width / 2, origin.y + height / 2);
     needCenter = false;
   }
 
   moveHeld(origin);
+  if (tutorial) updateTutorial(origin);
 
+  background(247);
+  if (tutorial) drawTutorial();
+  else          drawPad();
+  drawCornerButton();
+  drawFooter();
+}
+
+
+// ===============================================================
+// TUTORIAL LOGIC
+// ===============================================================
+void startTutorial() {
+  tutorial = true;
+  state = S_UP;
+  celebrating = false;
+  gotLeftClick = gotRightClick = false;
+  for (int i = 0; i < gotCircle.length; i++) gotCircle[i] = false;
+  menuFor = -1;
+  capturing = -1;
+  msg = "";
+  needCenter = true;
+}
+
+
+void endTutorial(String m) {
+  tutorial = false;
+  celebrating = false;
+  msg = m;
+}
+
+
+void updateTutorial(Point origin) {
   // pointer position in window coordinates
   float px = mouseX, py = mouseY;
   if (origin != null) {
@@ -166,21 +222,9 @@ void draw() {
     float[] t = moveTarget(state);
     if (dist(px, py, t[0], t[1]) < 36) complete("Great job!");
   }
-
-  background(247);
-  drawHeader();
-
-  if (state <= S_RIGHT)       drawMoveStep();
-  else if (state == S_CLICK)  drawClickStep();
-  else                        drawToggleStep();
-
-  drawFooter();
 }
 
 
-// ===============================================================
-// STEP LOGIC
-// ===============================================================
 void complete(String text) {
   celebrating = true;
   celebrateStart = millis();
@@ -190,60 +234,32 @@ void complete(String text) {
 
 void nextStep() {
   celebrating = false;
-  msg = "";
   state++;
-  if (state <= S_RIGHT) needCenter = true;
+  if (state > S_CIRCLES) endTutorial("Tutorial complete!");
+  else if (state <= S_RIGHT) needCenter = true;
 }
 
 
-void doToggle(int dir) {
-  if (state < S_TOGGLE || state == S_WAIT_KEY || celebrating) return;
-  selected = (selected + dir + NUM_BUTTONS) % NUM_BUTTONS;
-  msg = "";
-  if (state == S_TOGGLE) {
-    if (dir < 0) usedToggleL = true; else usedToggleR = true;
-    if (usedToggleL && usedToggleR) complete("Great job!");
-  }
-}
-
-
-void doConfirm() {
+void tutorialPress(int b) {
   if (celebrating) return;
-  if (state == S_SELECT) {
-    if (selected == BTN_RIGHT_SQUARE) {
-      remapTarget = selected;
-      state = S_WAIT_KEY;
-      msg = "";
-    } else {
-      msg = "Toggle to the right square first.";
-    }
-  } else if (state == S_FREE) {
-    remapTarget = selected;
-    state = S_WAIT_KEY;
-    msg = "";
+  String a = buttonActions[b];
+  if (state == S_CLICK) {
+    if (a.equals("LEFT_CLICK"))  tutorialClick(true);
+    if (a.equals("RIGHT_CLICK")) tutorialClick(false);
+  } else if (state == S_CIRCLES && b >= FIRST_CIRCLE) {
+    gotCircle[b - FIRST_CIRCLE] = true;
+    boolean all = true;
+    for (boolean g : gotCircle) all &= g;
+    if (all) complete("Great job!");
   }
 }
 
 
-void handleAction(int b, String a) {
-  flashAt[b] = millis();
-  if (celebrating) return;
-
-  if (a.equals("TOGGLE_LEFT"))       doToggle(-1);
-  else if (a.equals("TOGGLE_RIGHT")) doToggle(1);
-  else if (a.equals("LEFT_CLICK")) {
-    if (state == S_CLICK) {
-      gotLeftClick = true;
-      if (gotRightClick) complete("Great job!");
-    }
-  } else if (a.equals("RIGHT_CLICK")) {
-    if (state == S_CLICK) {
-      gotRightClick = true;
-      if (gotLeftClick) complete("Great job!");
-    } else {
-      doConfirm();
-    }
-  }
+void tutorialClick(boolean left) {
+  if (celebrating || state != S_CLICK) return;
+  clickFlashAt[left ? 0 : 1] = millis();
+  if (left) gotLeftClick = true; else gotRightClick = true;
+  if (gotLeftClick && gotRightClick) complete("Great job!");
 }
 
 
@@ -265,7 +281,9 @@ void onButton(int b, boolean pressed) {
             + " -> " + shortAction(buttonActions[b]);
   println(lastEvent);
 
-  if (pressed) handleAction(b, buttonActions[b]);
+  if (!pressed)      realRelease(b);
+  else if (tutorial) tutorialPress(b);
+  else               realPress(b);
 }
 
 
@@ -273,30 +291,59 @@ void serialEvent(Serial p) {
   String line = p.readStringUntil('\n');
   if (line == null) return;
   String[] parts = split(trim(line), ',');
-  if (parts.length != 2) return;
-  events.add(new int[] { parseInt(parts[0]), parseInt(parts[1]) });
+  if (parts.length == 3 && parts[0].equals("B")) {
+    events.add(new int[] { parseInt(parts[1]), parseInt(parts[2]) });
+  } else if (parts.length == 2 && !parts[0].equals("F")) {
+    events.add(new int[] { parseInt(parts[0]), parseInt(parts[1]) });
+  }
+}
+
+
+void mousePressed() {
+  if (overCornerButton()) {
+    if (tutorial) endTutorial("");
+    else          startTutorial();
+    return;
+  }
+
+  if (tutorial) {
+    if (mouseButton == LEFT)       tutorialClick(true);
+    else if (mouseButton == RIGHT) tutorialClick(false);
+    return;
+  }
+
+  if (menuFor >= 0) {
+    int item = menuItemAt(mouseX, mouseY);
+    if (item >= 0) chooseMenuItem(item);
+    menuFor = -1;
+    return;
+  }
+
+  int b = buttonAt(mouseX, mouseY);
+  if (b >= 0 && mouseButton == RIGHT) {
+    capturing = -1;
+    menuFor = b;
+    menuX = min(mouseX, width - MENU_W - 4);
+    menuY = min(mouseY, height - menuLabels.length * ITEM_H - 4);
+  }
 }
 
 
 void keyPressed() {
-  // waiting for the new key: capture whatever is pressed
-  if (state == S_WAIT_KEY) {
-    if (key == ESC) key = 0;            // stop Esc from closing the sketch
-    if (celebrating) return;
+  if (key == ESC) key = 0;            // stop Esc from closing the sketch
+
+  if (capturing >= 0) {
     if (keyCode == 0) { msg = "That key can't be used, try another."; return; }
-    buttonActions[remapTarget] = "KEY:" + keyCode;
-    complete(shapeNames[remapTarget] + " now sends " + keyLabel(keyCode) + ". Great job!");
+    buttonActions[capturing] = "KEY:" + keyCode;
+    msg = shapeNames[capturing] + " now sends " + keyLabel(keyCode) + ".";
+    capturing = -1;
     return;
   }
 
-  if (key == CODED) {
-    if (keyCode == LEFT)  doToggle(-1);
-    if (keyCode == RIGHT) doToggle(1);
-    return;
+  // ignore keys the tattoo itself is typing into this window
+  for (String a : realDown) {
+    if (a != null && a.equals("KEY:" + keyCode)) return;
   }
-  if (key == ENTER || key == RETURN) { doConfirm(); return; }
-
-  if (state == S_FREE && (key == 's' || key == 'S')) { saveBindings(); return; }
 
   if (key >= '0' && key <= '9') events.add(new int[] { key - '0', 1 });
 }
@@ -307,17 +354,46 @@ void keyReleased() {
 }
 
 
-void saveBindings() {
-  String[] lines = new String[buttonActions.length];
-  for (int i = 0; i < lines.length; i++) lines[i] = i + "," + buttonActions[i];
-  saveStrings("bindings.txt", lines);
-  msg = "Saved bindings.txt in the sketch folder.";
+void chooseMenuItem(int item) {
+  if (menuActions[item] == null) {
+    capturing = menuFor;
+    msg = "";
+    return;
+  }
+  buttonActions[menuFor] = menuActions[item];
+  msg = shapeNames[menuFor] + " now does " + shortAction(menuActions[item]) + ".";
 }
 
 
 // ===============================================================
-// ROBOT MOUSE (movement only)
+// ROBOT OUTPUT
 // ===============================================================
+void realPress(int b) {
+  if (robot == null) return;
+  String a = buttonActions[b];
+  if (a.equals("SCROLL_TOGGLE")) { scrollDown = !scrollDown; return; }
+  try {
+    if (a.equals("LEFT_CLICK"))       robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
+    else if (a.equals("RIGHT_CLICK")) robot.mousePress(InputEvent.BUTTON3_DOWN_MASK);
+    else if (a.startsWith("KEY:"))    robot.keyPress(parseInt(a.substring(4)));
+    else return;
+    realDown[b] = a;
+  } catch (IllegalArgumentException e) {
+    println("Can't send " + a + ": " + e);
+  }
+}
+
+
+void realRelease(int b) {
+  String a = realDown[b];
+  if (a == null || robot == null) return;
+  realDown[b] = null;
+  if (a.equals("LEFT_CLICK"))       robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
+  else if (a.equals("RIGHT_CLICK")) robot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK);
+  else                              robot.keyRelease(parseInt(a.substring(4)));
+}
+
+
 Point canvasOrigin() {
   try {
     Component c = (Component) surface.getNative();
@@ -329,7 +405,7 @@ Point canvasOrigin() {
 
 
 void moveHeld(Point origin) {
-  if (robot == null || origin == null) return;
+  if (robot == null) return;
   int dx = 0, dy = 0;
   for (int i = 0; i < NUM_BUTTONS; i++) {
     if (!held[i]) continue;
@@ -342,15 +418,145 @@ void moveHeld(Point origin) {
   if (dx == 0 && dy == 0) return;
 
   Point p = MouseInfo.getPointerInfo().getLocation();
-  int nx = constrain(p.x + dx, origin.x, origin.x + width - 1);   // keep pointer inside window
-  int ny = constrain(p.y + dy, origin.y, origin.y + height - 1);
+  int nx = p.x + dx, ny = p.y + dy;
+  if (tutorial) {                                  // keep pointer inside window
+    if (origin == null) return;
+    nx = constrain(nx, origin.x, origin.x + width - 1);
+    ny = constrain(ny, origin.y, origin.y + height - 1);
+  }
   robot.mouseMove(nx, ny);
+}
+
+
+// ===============================================================
+// HIT TESTING
+// ===============================================================
+int buttonAt(float x, float y) {
+  for (int i = 0; i < NUM_BUTTONS; i++) {
+    if (dist(x, y, bx[i], by[i]) < PAD_SIZE * 0.6) return i;
+  }
+  return -1;
+}
+
+
+int menuItemAt(float x, float y) {
+  if (x < menuX || x > menuX + MENU_W) return -1;
+  int i = floor((y - menuY) / ITEM_H);
+  return (i >= 0 && i < menuLabels.length) ? i : -1;
+}
+
+
+boolean overCornerButton() {
+  return mouseX > width - 150 && mouseX < width - 20 && mouseY > 12 && mouseY < 44;
 }
 
 
 // ===============================================================
 // DRAWING
 // ===============================================================
+void drawPad() {
+  fill(120);
+  textAlign(LEFT, BASELINE);
+  textSize(14);
+  text("ADS TATTOO", 20, 28);
+
+  fill(20);
+  textAlign(CENTER, BASELINE);
+  textSize(26);
+  String head = capturing >= 0
+    ? "Press the key you want the " + shapeNames[capturing].toLowerCase() + " to send"
+    : "Right click a button to change what it does";
+  text(head, width / 2, 85);
+
+  if (msg.length() > 0) {
+    fill(210, 110, 20);
+    textSize(18);
+    text(msg, width / 2, 120);
+  }
+
+  int hover = menuFor < 0 ? buttonAt(mouseX, mouseY) : -1;
+  for (int i = 0; i < NUM_BUTTONS; i++) {
+    color c = held[i] ? color(255, 200, 60)
+            : (i == capturing || i == menuFor) ? color(255, 230, 170)
+            : color(232);
+    drawShape(i, bx[i], by[i], PAD_SIZE, c, held[i] || i == hover || i == menuFor);
+    fill(60);
+    textAlign(CENTER, BASELINE);
+    textSize(12);
+    text(shortAction(buttonActions[i]), bx[i], by[i] + PAD_SIZE / 2 + 16);
+  }
+
+  if (menuFor >= 0) drawMenu();
+}
+
+
+void drawMenu() {
+  stroke(140);
+  strokeWeight(1);
+  fill(255);
+  rect(menuX, menuY, MENU_W, menuLabels.length * ITEM_H, 6);
+
+  int over = menuItemAt(mouseX, mouseY);
+  textAlign(LEFT, CENTER);
+  textSize(14);
+  for (int i = 0; i < menuLabels.length; i++) {
+    float y = menuY + i * ITEM_H;
+    boolean current = buttonActions[menuFor].equals(menuActions[i]);
+    if (i == over) {
+      noStroke();
+      fill(255, 220, 120);
+      rect(menuX + 2, y + 1, MENU_W - 4, ITEM_H - 2, 4);
+    }
+    fill(current ? color(40, 140, 70) : color(20));
+    text((current ? "> " : "   ") + menuLabels[i], menuX + 10, y + ITEM_H / 2);
+  }
+}
+
+
+void drawCornerButton() {
+  boolean over = overCornerButton();
+  stroke(140);
+  strokeWeight(1);
+  fill(over ? color(255, 220, 120) : color(255));
+  rect(width - 150, 12, 130, 32, 6);
+  fill(20);
+  textAlign(CENTER, CENTER);
+  textSize(15);
+  text(tutorial ? "Exit tutorial" : "Tutorial", width - 85, 28);
+}
+
+
+void drawFooter() {
+  fill(130);
+  textAlign(LEFT, BASELINE);
+  textSize(12);
+  text("Last: " + lastEvent, 20, height - 14);
+}
+
+
+void drawTutorial() {
+  fill(120);
+  textAlign(LEFT, BASELINE);
+  textSize(14);
+  text("ADS TATTOO - TUTORIAL     Step " + (state + 1) + " of 6", 20, 28);
+
+  fill(20);
+  textAlign(CENTER, BASELINE);
+  textSize(26);
+  text(instruction(), width / 2, 85);
+
+  if (celebrating) {
+    fill(40, 160, 80);
+    textSize(40);
+    text(celebrateText, width / 2, 140);
+  }
+
+  if (state <= S_RIGHT)      drawMoveStep();
+  else if (state == S_CLICK) drawClickStep();
+  else                       drawCircleStep();
+}
+
+
 float[] moveTarget(int st) {
   float cx = width / 2.0, cy = height / 2.0;
   if (st == S_UP)    return new float[] { cx, cy - 200 };
@@ -362,48 +568,13 @@ float[] moveTarget(int st) {
 
 String instruction() {
   switch (state) {
-    case S_UP:       return "Click the up arrow button to move the mouse pointer up";
-    case S_DOWN:     return "Click the down arrow button to move the mouse pointer down";
-    case S_LEFT:     return "Click the left arrow button to move the mouse pointer left";
-    case S_RIGHT:    return "Click the right arrow button to move the mouse pointer right";
-    case S_CLICK:    return "Click the left circle and the right circle";
-    case S_TOGGLE:   return "Press the left toggle and right toggle to cycle through the buttons";
-    case S_SELECT:   return "Toggle to the right square, then right click to change that button";
-    case S_WAIT_KEY: return "Press the key you want the " + shapeNames[remapTarget].toLowerCase() + " to send";
-    default:         return "Free play: toggle to any button, right click to change it. Press S to save.";
+    case S_UP:    return "Press the up arrow button to move the mouse pointer up";
+    case S_DOWN:  return "Press the down arrow button to move the mouse pointer down";
+    case S_LEFT:  return "Press the left arrow button to move the mouse pointer left";
+    case S_RIGHT: return "Press the right arrow button to move the mouse pointer right";
+    case S_CLICK: return "Press the left square and the right square to click";
+    default:      return "Press each of the four circles";
   }
-}
-
-
-void drawHeader() {
-  fill(120);
-  textAlign(LEFT, BASELINE);
-  textSize(14);
-  String step = state <= S_WAIT_KEY ? "Step " + (state + 1) + " of 8" : "Free play";
-  text("ADS TATTOO - TUTORIAL     " + step, 20, 28);
-
-  fill(20);
-  textAlign(CENTER, BASELINE);
-  textSize(26);
-  text(instruction(), width / 2, 85);
-
-  if (celebrating) {
-    fill(40, 160, 80);
-    textSize(40);
-    text(celebrateText, width / 2, 140);
-  } else if (msg.length() > 0) {
-    fill(210, 110, 20);
-    textSize(18);
-    text(msg, width / 2, 135);
-  }
-}
-
-
-void drawFooter() {
-  fill(130);
-  textAlign(LEFT, BASELINE);
-  textSize(12);
-  text("Last: " + lastEvent, 20, height - 14);
 }
 
 
@@ -432,13 +603,11 @@ void drawMoveStep() {
 void drawClickStep() {
   float cx = width / 2.0, cy = height / 2.0;
   for (int side = 0; side < 2; side++) {
-    int b = side == 0 ? 4 : 5;                 // left / right circle
     boolean got = side == 0 ? gotLeftClick : gotRightClick;
-    boolean flashing = millis() - flashAt[b] < 250;
+    boolean flashing = millis() - clickFlashAt[side] < 250;
     float x = cx + (side == 0 ? -150 : 150);
-    noStroke();
-    fill(got ? color(60, 175, 100) : (flashing ? color(255, 200, 60) : color(225)));
-    ellipse(x, cy, 120, 120);
+    color c = got ? color(60, 175, 100) : (flashing ? color(255, 200, 60) : color(225));
+    drawShape(4 + side, x, cy, 120, c, false);
     fill(20);
     textAlign(CENTER, BASELINE);
     textSize(18);
@@ -447,58 +616,39 @@ void drawClickStep() {
 }
 
 
-void drawToggleStep() {
+void drawCircleStep() {
   float cx = width / 2.0, cy = height / 2.0;
-
-  // big view of the currently selected button
-  drawShape(selected, cx, cy - 20, 140, true);
-  fill(20);
-  textAlign(CENTER, BASELINE);
-  textSize(24);
-  text(shapeNames[selected], cx, cy + 90);
-  textSize(16);
-  fill(90);
-  text("sends: " + shortAction(buttonActions[selected]), cx, cy + 118);
-
-  if (state == S_WAIT_KEY && !celebrating && (millis() / 500) % 2 == 0) {
-    fill(210, 110, 20);
-    textSize(20);
-    text("waiting for a key...", cx, cy + 155);
-  }
-
-  // row of all buttons with what each one currently sends
-  for (int i = 0; i < NUM_BUTTONS; i++) {
-    float x = cx + (i - 4.5) * 92;
-    drawShape(i, x, height - 85, 34, i == selected);
-    fill(60);
-    textAlign(CENTER, BASELINE);
-    textSize(11);
-    text(shortAction(buttonActions[i]), x, height - 45);
+  for (int k = 0; k < 4; k++) {
+    int b = FIRST_CIRCLE + k;
+    float x = cx + (k % 2 == 0 ? -90 : 90);
+    float y = cy + (k < 2 ? -70 : 80);
+    color c = gotCircle[k] ? color(60, 175, 100) : (held[b] ? color(255, 200, 60) : color(225));
+    drawShape(b, x, y, 110, c, false);
+    fill(20);
+    textAlign(CENTER, CENTER);
+    textSize(16);
+    text(shortAction(buttonActions[b]), x, y);
   }
 }
 
 
-void drawShape(int i, float x, float y, float s, boolean on) {
+void drawShape(int i, float x, float y, float s, color c, boolean on) {
   pushMatrix();
   translate(x, y);
   stroke(on ? 20 : 140);
   strokeWeight(on ? 3 : 1.5);
-  fill(on ? color(255, 200, 60) : color(232));
+  fill(c);
 
   if (i <= 3) {                                   // arrows: up, left, right, down
     float[] ang = { 0, -HALF_PI, HALF_PI, PI };
     rotate(ang[i]);
     triangle(0, -s / 2, -s / 2, s / 2, s / 2, s / 2);
-  } else if (i <= 5) {                            // circles
+  } else if (i <= 5) {                            // squares
+    rectMode(CENTER);
+    rect(0, 0, s, s, 6);
+    rectMode(CORNER);
+  } else {                                        // circles
     ellipse(0, 0, s, s);
-  } else if (i <= 7) {                            // squares
-    rectMode(CENTER);
-    rect(0, 0, s, s);
-    rectMode(CORNER);
-  } else {                                        // rectangles
-    rectMode(CENTER);
-    rect(0, 0, s * 1.6, s * 0.6);
-    rectMode(CORNER);
   }
   popMatrix();
 }
@@ -507,20 +657,41 @@ void drawShape(int i, float x, float y, float s, boolean on) {
 // ===============================================================
 // LABELS
 // ===============================================================
+// macOS getKeyText returns symbols (e.g. ⏎) the default font can't draw
 String keyLabel(int code) {
-  return KeyEvent.getKeyText(code);
+  switch (code) {
+    case KeyEvent.VK_ENTER:      return "Enter";
+    case KeyEvent.VK_TAB:        return "Tab";
+    case KeyEvent.VK_SPACE:      return "Space";
+    case KeyEvent.VK_ESCAPE:     return "Esc";
+    case KeyEvent.VK_BACK_SPACE: return "Backspace";
+    case KeyEvent.VK_DELETE:     return "Delete";
+    case KeyEvent.VK_SHIFT:      return "Shift";
+    case KeyEvent.VK_CONTROL:    return "Ctrl";
+    case KeyEvent.VK_ALT:        return "Option";
+    case KeyEvent.VK_META:       return "Cmd";
+    case KeyEvent.VK_CAPS_LOCK:  return "Caps Lock";
+    case KeyEvent.VK_UP:         return "Up key";
+    case KeyEvent.VK_DOWN:       return "Down key";
+    case KeyEvent.VK_LEFT:       return "Left key";
+    case KeyEvent.VK_RIGHT:      return "Right key";
+  }
+  String t = KeyEvent.getKeyText(code);
+  for (char ch : t.toCharArray()) {
+    if (ch > 127) return "Key " + code;
+  }
+  return t;
 }
 
 
 String shortAction(String a) {
   if (a.startsWith("KEY:"))        return keyLabel(parseInt(a.substring(4)));
-  if (a.equals("MOVE_UP"))         return "Up";
-  if (a.equals("MOVE_DOWN"))       return "Down";
-  if (a.equals("MOVE_LEFT"))       return "Left";
-  if (a.equals("MOVE_RIGHT"))      return "Right";
+  if (a.equals("MOVE_UP"))         return "Move up";
+  if (a.equals("MOVE_DOWN"))       return "Move down";
+  if (a.equals("MOVE_LEFT"))       return "Move left";
+  if (a.equals("MOVE_RIGHT"))      return "Move right";
   if (a.equals("LEFT_CLICK"))      return "Left click";
   if (a.equals("RIGHT_CLICK"))     return "Right click";
-  if (a.equals("TOGGLE_LEFT"))     return "Toggle left";
-  if (a.equals("TOGGLE_RIGHT"))    return "Toggle right";
+  if (a.equals("SCROLL_TOGGLE"))   return "Scroll: " + (scrollDown ? "down" : "up");
   return a;
 }
