@@ -42,19 +42,26 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 //          SCROLL_TOGGLE, KEY:<java keycode>
 // ---------------------------------------------------------------
 String[] buttonActions = {
-  "MOVE_UP", "MOVE_LEFT", "MOVE_RIGHT", "MOVE_DOWN",
-  "LEFT_CLICK", "RIGHT_CLICK",
-  "KEY:10", "KEY:9", "KEY:32", "SCROLL_TOGGLE"   // Enter, Tab, Space, scroll
+  "MOVE_UP", "MOVE_DOWN", "MOVE_LEFT", "MOVE_RIGHT",
+  "LEFT_CLICK", "KEY:10",
+  "RIGHT_CLICK", "KEY:9", "SCROLL_TOGGLE", "KEY:32"   // Enter, Tab, Space, scroll
 };
 
 String[] shapeNames = {
-  "Up arrow", "Left arrow", "Right arrow", "Down arrow",
-  "Left square", "Right square",
-  "Top-left circle", "Top-right circle", "Bottom-left circle", "Bottom-right circle"
+  "Up arrow", "Down arrow", "Left arrow", "Right arrow",
+  "Left square", "Top-left circle",
+  "Right square", "Top-right circle", "Bottom-left circle", "Bottom-right circle"
 };
 
+// shape per button index: 0 = arrow, 1 = square, 2 = circle
+final int[] shapeType = { 0, 0, 0, 0, 1, 2, 1, 2, 2, 2 };
+
+// the four circle buttons, in on-screen order (TL, TR, BL, BR)
+final int[] circleIdx = { 5, 7, 8, 9 };
+final int[] squareIdx = { 4, 6 };   // left click, right click
+
 final int NUM_BUTTONS = 10;
-final int FIRST_CIRCLE = 6;
+//final int FIRST_CIRCLE = 6;
 
 boolean[] held = new boolean[NUM_BUTTONS];
 String[] realDown = new String[NUM_BUTTONS];   // action actually pressed on the desktop
@@ -64,6 +71,11 @@ final float PAD_SIZE = 56;
 
 int moveSpeed = 8;   // pixels per frame while held (60 fps)
 boolean scrollDown = true;   // flipped by SCROLL_TOGGLE; scrolling itself comes later
+volatile int flexValue = 0;          // latest "F,value" from the Arduino
+final int FLEX_THRESHOLD = 20;       // at or below this = no scroll
+final int FLEX_MAX = 100;            // flex reading that gives the fastest scroll
+final float MAX_NOTCHES = 0.5;       // wheel notches per frame at FLEX_MAX (60 fps)
+float scrollAccum = 0;
 
 // ---------------------------------------------------------------
 // REMAP MENU
@@ -124,16 +136,16 @@ void setup() {
   surface.setTitle("ADS Tattoo");
 
   float cx = width / 2.0;
-  bx[0] = cx;      by[0] = 420;   // up
-  bx[1] = cx - 80; by[1] = 490;   // left
-  bx[2] = cx + 80; by[2] = 490;   // right
-  bx[3] = cx;      by[3] = 560;   // down
-  bx[4] = cx - 60; by[4] = 340;   // squares
-  bx[5] = cx + 60; by[5] = 340;
-  bx[6] = cx - 60; by[6] = 180;   // circles
-  bx[7] = cx + 60; by[7] = 180;
-  bx[8] = cx - 60; by[8] = 260;
-  bx[9] = cx + 60; by[9] = 260;
+  bx[0] = cx;      by[0] = 180;   // up arrow
+  bx[2] = cx - 80; by[2] = 250;   // left arrow
+  bx[3] = cx + 80; by[3] = 250;   // right arrow
+  bx[1] = cx;      by[1] = 320;   // down arrow
+  bx[4] = cx - 60; by[4] = 400;   // left square
+  bx[6] = cx + 60; by[6] = 400;   // right square
+  bx[7] = cx - 60; by[7] = 480;   // top-left circle (Enter)
+  bx[5] = cx + 60; by[5] = 480;   // top-right circle (Tab)
+  bx[9] = cx - 60; by[9] = 560;   // bottom-left circle (Space)
+  bx[8] = cx + 60; by[8] = 560;   // bottom-right circle (Scroll)
 
   try {
     robot = new Robot();
@@ -174,6 +186,7 @@ void draw() {
   }
 
   moveHeld(origin);
+  scrollWithFlex();
   if (tutorial) updateTutorial(origin);
 
   background(247);
@@ -246,8 +259,10 @@ void tutorialPress(int b) {
   if (state == S_CLICK) {
     if (a.equals("LEFT_CLICK"))  tutorialClick(true);
     if (a.equals("RIGHT_CLICK")) tutorialClick(false);
-  } else if (state == S_CIRCLES && b >= FIRST_CIRCLE) {
-    gotCircle[b - FIRST_CIRCLE] = true;
+  } else if (state == S_CIRCLES) {
+    for (int k = 0; k < circleIdx.length; k++) {
+      if (circleIdx[k] == b) gotCircle[k] = true;
+    }
     boolean all = true;
     for (boolean g : gotCircle) all &= g;
     if (all) complete("Great job!");
@@ -291,9 +306,11 @@ void serialEvent(Serial p) {
   String line = p.readStringUntil('\n');
   if (line == null) return;
   String[] parts = split(trim(line), ',');
-  if (parts.length == 3 && parts[0].equals("B")) {
+  if (parts.length == 2 && parts[0].equals("F")) {
+    flexValue = parseInt(parts[1]);
+  } else if (parts.length == 3 && parts[0].equals("B")) {
     events.add(new int[] { parseInt(parts[1]), parseInt(parts[2]) });
-  } else if (parts.length == 2 && !parts[0].equals("F")) {
+  } else if (parts.length == 2) {
     events.add(new int[] { parseInt(parts[0]), parseInt(parts[1]) });
   }
 }
@@ -427,6 +444,21 @@ void moveHeld(Point origin) {
   robot.mouseMove(nx, ny);
 }
 
+void scrollWithFlex() {
+  // no scrolling in the tutorial, so it never scrolls your desktop
+  if (robot == null || tutorial || flexValue <= FLEX_THRESHOLD) {
+    scrollAccum = 0;
+    return;
+  }
+  float speed = map(constrain(flexValue, FLEX_THRESHOLD, FLEX_MAX),
+                    FLEX_THRESHOLD, FLEX_MAX, 0.1, MAX_NOTCHES);
+  scrollAccum += speed;
+  int n = (int) scrollAccum;
+  if (n > 0) {
+    robot.mouseWheel(scrollDown ? n : -n);   // positive = scroll down
+    scrollAccum -= n;
+  }
+}
 
 // ===============================================================
 // HIT TESTING
@@ -530,7 +562,7 @@ void drawFooter() {
   fill(130);
   textAlign(LEFT, BASELINE);
   textSize(12);
-  text("Last: " + lastEvent, 20, height - 14);
+  text("Last: " + lastEvent + "     Flex: " + flexValue, 20, height - 14);
 }
 
 
@@ -607,7 +639,7 @@ void drawClickStep() {
     boolean flashing = millis() - clickFlashAt[side] < 250;
     float x = cx + (side == 0 ? -150 : 150);
     color c = got ? color(60, 175, 100) : (flashing ? color(255, 200, 60) : color(225));
-    drawShape(4 + side, x, cy, 120, c, false);
+    drawShape(squareIdx[side], x, cy, 120, c, false);
     fill(20);
     textAlign(CENTER, BASELINE);
     textSize(18);
@@ -619,8 +651,8 @@ void drawClickStep() {
 void drawCircleStep() {
   float cx = width / 2.0, cy = height / 2.0;
   for (int k = 0; k < 4; k++) {
-    int b = FIRST_CIRCLE + k;
-    float x = cx + (k % 2 == 0 ? -90 : 90);
+    int b = circleIdx[k];
+    float x = cx + (k % 2 == 0 ? 90 : -90);   // was -90 : 90
     float y = cy + (k < 2 ? -70 : 80);
     color c = gotCircle[k] ? color(60, 175, 100) : (held[b] ? color(255, 200, 60) : color(225));
     drawShape(b, x, y, 110, c, false);
@@ -639,11 +671,11 @@ void drawShape(int i, float x, float y, float s, color c, boolean on) {
   strokeWeight(on ? 3 : 1.5);
   fill(c);
 
-  if (i <= 3) {                                   // arrows: up, left, right, down
-    float[] ang = { 0, -HALF_PI, HALF_PI, PI };
+  if (shapeType[i] == 0) {                        // arrows: up, down, left, right
+    float[] ang = { 0, PI, -HALF_PI, HALF_PI };
     rotate(ang[i]);
     triangle(0, -s / 2, -s / 2, s / 2, s / 2, s / 2);
-  } else if (i <= 5) {                            // squares
+  } else if (shapeType[i] == 1) {                 // squares
     rectMode(CENTER);
     rect(0, 0, s, s, 6);
     rectMode(CORNER);

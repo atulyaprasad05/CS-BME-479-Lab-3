@@ -62,7 +62,12 @@ void draw() {
   text("SMART TATTOO - SNAKE", 20, 28);
 
   snake.update();
-  snake.display(0, 40, 24);
+  //snake.display(0, 40, 24);
+  int top = 40;                                            // space for the title
+  int cell = min(width / snake.cols, (height - top) / snake.rows);
+  int x0 = (width - cell * snake.cols) / 2;                // center horizontally
+  int y0 = top + ((height - top) - cell * snake.rows) / 2; // center vertically
+  snake.display(x0, y0, cell);
 }
 
 
@@ -108,30 +113,30 @@ void serialEvent(Serial p) {
 
   if (pad == 0) {
 
-    println("UP");
-
-    snake.setDirection(snake.UP);
-  }
-
-  else if (pad == 1) {
-
-    println("DOWN");
-
-    snake.setDirection(snake.DOWN);
-  }
-
-  else if (pad == 2) {
-
     println("LEFT");
 
     snake.setDirection(snake.LEFT);
   }
 
-  else if (pad == 3) {
+  else if (pad == 1) {
+
+    println("UP");
+
+    snake.setDirection(snake.UP);
+  }
+
+  else if (pad == 2) {
 
     println("RIGHT");
 
     snake.setDirection(snake.RIGHT);
+  }
+
+  else if (pad == 3) {
+
+    println("DOWN");
+
+    snake.setDirection(snake.DOWN);
   }
 }
 
