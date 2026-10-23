@@ -159,5 +159,17 @@ void setMouseButton(int buttonMask, boolean pressed) {
 
 
 // Keyboard testing without the Arduino: hold '0' / '1' / '2' like the pads
-void keyPressed()  { setButton(key - '0', true); }
+// '`' quits
+void keyPressed() {
+  if (key == '`') exit();
+  else setButton(key - '0', true);
+}
+
 void keyReleased() { setButton(key - '0', false); }
+
+
+// Let go of any mouse buttons still held so a drag doesn't stay stuck
+void exit() {
+  for (int i = 0; i < buttonActions.length; i++) setButton(i, false);
+  super.exit();
+}

@@ -9,14 +9,18 @@ Adafruit_MPR121 cap = Adafruit_MPR121();
 
 const int NUM_BUTTONS = 10;
 
-// Difference required before switching from one
-// touched pad to another nearby pad
-const int SWITCH_MARGIN = 10;
+// Several pads can be pressed at once, but a touched pad
+// much weaker than the strongest one is treated as
+// crosstalk from its neighbour and ignored.
+// A pad turns on above PRESS_RATIO of the strongest signal
+// and stays on until it drops below RELEASE_RATIO.
+const float PRESS_RATIO = 0.6;
+const float RELEASE_RATIO = 0.4;
 
 // Set true only when debugging capacitive pads
 const bool DEBUG = false;
 
-int activeButton = -1;
+bool active[NUM_BUTTONS];
 
 
 // =====================================================
@@ -148,63 +152,38 @@ void loop() {
   // Find strongest touched electrode
   // ---------------------------------------------------
 
-  int newActive = -1;
+  int strength[NUM_BUTTONS];
   int best = 0;
 
   for (int i = 0; i < NUM_BUTTONS; i++) {
 
-    // Skip electrode if it is not touched
-    if (!(touched & (1 << i))) {
-      continue;
-    }
+    strength[i] = signalStrength(i);
 
-    int strength = signalStrength(i);
-
-    if (newActive < 0 || strength > best) {
-
-      newActive = i;
-      best = strength;
+    if ((touched & (1 << i)) && strength[i] > best) {
+      best = strength[i];
     }
   }
 
 
   // ---------------------------------------------------
-  // Avoid jumping between nearby electrodes
+  // Decide each pad, filtering out crosstalk
   // ---------------------------------------------------
 
-  if (activeButton >= 0 &&
-      (touched & (1 << activeButton)) &&
-      best - signalStrength(activeButton) < SWITCH_MARGIN) {
+  for (int i = 0; i < NUM_BUTTONS; i++) {
 
-    newActive = activeButton;
-  }
+    bool isTouched = touched & (1 << i);
+    float ratio = active[i] ? RELEASE_RATIO : PRESS_RATIO;
 
+    bool nowActive = isTouched && strength[i] >= best * ratio;
 
-  // ---------------------------------------------------
-  // Detect button change
-  // ---------------------------------------------------
-
-  if (newActive != activeButton) {
-
-    // Previous button released
-    if (activeButton >= 0) {
+    if (nowActive != active[i]) {
 
       Serial.print("B,");
-      Serial.print(activeButton);
-      Serial.println(",0");
+      Serial.print(i);
+      Serial.println(nowActive ? ",1" : ",0");
+
+      active[i] = nowActive;
     }
-
-
-    // New button pressed
-    if (newActive >= 0) {
-
-      Serial.print("B,");
-      Serial.print(newActive);
-      Serial.println(",1");
-    }
-
-
-    activeButton = newActive;
   }
 
 
