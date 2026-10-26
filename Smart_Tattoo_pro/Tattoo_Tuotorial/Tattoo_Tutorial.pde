@@ -25,6 +25,11 @@
  *   6 top-left circle  7 top-right circle  8 bottom-left circle  9 bottom-right circle
  *
  * Keyboard testing without the Arduino: keys 0-9 act like the buttons.
+ *
+ * Hold settings (left side of the main screen, - / + buttons):
+ *   Dwell   a pad has to be touched this long before it activates (0 = instant)
+ *   Sticky  a held pad stays held through let-gos shorter than this, so a
+ *           noise blip doesn't drop a click or drag (0 = off)
  */
 
 import processing.serial.*;
@@ -63,7 +68,7 @@ final int[] squareIdx = { 4, 6 };   // left click, right click
 final int NUM_BUTTONS = 10;
 //final int FIRST_CIRCLE = 6;
 
-boolean[] held = new boolean[NUM_BUTTONS];
+boolean[] held = new boolean[NUM_BUTTONS];      // pressed after dwell / sticky
 String[] realDown = new String[NUM_BUTTONS];   // action actually pressed on the desktop
 float[] bx = new float[NUM_BUTTONS];
 float[] by = new float[NUM_BUTTONS];
@@ -76,6 +81,25 @@ final int FLEX_THRESHOLD = 20;       // at or below this = no scroll
 final int FLEX_MAX = 100;            // flex reading that gives the fastest scroll
 final float MAX_NOTCHES = 0.5;       // wheel notches per frame at FLEX_MAX (60 fps)
 float scrollAccum = 0;
+
+// ---------------------------------------------------------------
+// HOLD SETTINGS (dwell + sticky)
+// ---------------------------------------------------------------
+int dwellMs = 0;         // touch must last this long before the pad activates
+int stickyMs = 100;      // let-gos shorter than this don't release the pad
+final int DWELL_STEP = 50;
+final int DWELL_MAX = 1000;
+final int STICKY_STEP = 25;
+final int STICKY_MAX = 500;
+
+boolean[] rawDown = new boolean[NUM_BUTTONS];  // latest touch state from the Arduino
+int[] rawDownAt = new int[NUM_BUTTONS];        // millis() when the current touch began
+int[] rawUpAt = new int[NUM_BUTTONS];          // millis() when the pad was last let go
+
+final int SET_X = 30;    // settings panel position
+final int SET_Y = 175;
+final int STEP_W = 28;
+final int STEP_H = 24;
 
 // ---------------------------------------------------------------
 // REMAP MENU
@@ -134,6 +158,8 @@ void setup() {
   size(1000, 640);
   frameRate(60);
   surface.setTitle("ADS Tattoo");
+
+  for (int i = 0; i < NUM_BUTTONS; i++) rawUpAt[i] = -100000;
 
   float cx = width / 2.0;
   bx[0] = cx;      by[0] = 180;   // up arrow
@@ -283,7 +309,37 @@ void tutorialClick(boolean left) {
 // ===============================================================
 void processQueue() {
   int[] e;
-  while ((e = events.poll()) != null) onButton(e[0], e[1] == 1);
+  while ((e = events.poll()) != null) onRaw(e[0], e[1] == 1);
+  updateHolds();
+}
+
+
+// Raw touch / release from the Arduino (or keys 0-9)
+void onRaw(int b, boolean down) {
+  if (b < 0 || b >= NUM_BUTTONS) return;
+  if (rawDown[b] == down) return;
+  rawDown[b] = down;
+  int now = millis();
+  if (down) {
+    // touching again inside the sticky window continues the same press,
+    // so a blip doesn't restart the dwell timer either
+    if (now - rawUpAt[b] > stickyMs) rawDownAt[b] = now;
+  } else {
+    rawUpAt[b] = now;
+  }
+}
+
+
+// Turns raw touches into presses / releases using the dwell and sticky times
+void updateHolds() {
+  int now = millis();
+  for (int b = 0; b < NUM_BUTTONS; b++) {
+    if (!held[b] && rawDown[b] && now - rawDownAt[b] >= dwellMs) {
+      onButton(b, true);
+    } else if (held[b] && !rawDown[b] && now - rawUpAt[b] >= stickyMs) {
+      onButton(b, false);
+    }
+  }
 }
 
 
@@ -336,6 +392,12 @@ void mousePressed() {
     return;
   }
 
+  int s = stepperAt(mouseX, mouseY);
+  if (s >= 0) {
+    changeHoldSetting(s);
+    return;
+  }
+
   int b = buttonAt(mouseX, mouseY);
   if (b >= 0 && mouseButton == RIGHT) {
     capturing = -1;
@@ -368,6 +430,15 @@ void keyPressed() {
 
 void keyReleased() {
   if (key >= '0' && key <= '9') events.add(new int[] { key - '0', 0 });
+}
+
+
+// 0 = dwell -, 1 = dwell +, 2 = sticky -, 3 = sticky +
+void changeHoldSetting(int s) {
+  if (s == 0) dwellMs = max(0, dwellMs - DWELL_STEP);
+  if (s == 1) dwellMs = min(DWELL_MAX, dwellMs + DWELL_STEP);
+  if (s == 2) stickyMs = max(0, stickyMs - STICKY_STEP);
+  if (s == 3) stickyMs = min(STICKY_MAX, stickyMs + STICKY_STEP);
 }
 
 
@@ -478,6 +549,30 @@ int menuItemAt(float x, float y) {
 }
 
 
+// x of the - / + button in a settings row
+float stepperX(boolean plus) {
+  return SET_X + (plus ? 190 : 80);
+}
+
+
+float stepperY(int row) {
+  return SET_Y + 18 + row * 40;
+}
+
+
+// which - / + button is under (x, y), or -1 (only on the main screen)
+int stepperAt(float x, float y) {
+  if (tutorial) return -1;
+  for (int row = 0; row < 2; row++) {
+    for (int p = 0; p < 2; p++) {
+      float sx = stepperX(p == 1), sy = stepperY(row);
+      if (x >= sx && x <= sx + STEP_W && y >= sy && y <= sy + STEP_H) return row * 2 + p;
+    }
+  }
+  return -1;
+}
+
+
 boolean overCornerButton() {
   return mouseX > width - 150 && mouseX < width - 20 && mouseY > 12 && mouseY < 44;
 }
@@ -518,7 +613,49 @@ void drawPad() {
     text(shortAction(buttonActions[i]), bx[i], by[i] + PAD_SIZE / 2 + 16);
   }
 
+  drawHoldSettings();
   if (menuFor >= 0) drawMenu();
+}
+
+
+void drawHoldSettings() {
+  fill(20);
+  textAlign(LEFT, BASELINE);
+  textSize(16);
+  text("Hold settings", SET_X, SET_Y);
+
+  String[] names = { "Dwell", "Sticky" };
+  int[] values = { dwellMs, stickyMs };
+  int over = menuFor < 0 ? stepperAt(mouseX, mouseY) : -1;
+
+  for (int row = 0; row < 2; row++) {
+    float y = stepperY(row);
+    fill(20);
+    textAlign(LEFT, CENTER);
+    textSize(15);
+    text(names[row], SET_X, y + STEP_H / 2);
+
+    for (int p = 0; p < 2; p++) {
+      float x = stepperX(p == 1);
+      stroke(140);
+      strokeWeight(1);
+      fill(over == row * 2 + p ? color(255, 220, 120) : color(255));
+      rect(x, y, STEP_W, STEP_H, 6);
+      fill(20);
+      textAlign(CENTER, CENTER);
+      text(p == 1 ? "+" : "-", x + STEP_W / 2, y + STEP_H / 2 - 1);
+    }
+
+    textAlign(CENTER, CENTER);
+    text(values[row] == 0 ? "off" : values[row] + " ms",
+         (stepperX(false) + STEP_W + stepperX(true)) / 2, y + STEP_H / 2);
+  }
+
+  fill(120);
+  textAlign(LEFT, BASELINE);
+  textSize(12);
+  text("Dwell: touch this long before a pad fires", SET_X, SET_Y + 112);
+  text("Sticky: ignore let-gos shorter than this", SET_X, SET_Y + 130);
 }
 
 
