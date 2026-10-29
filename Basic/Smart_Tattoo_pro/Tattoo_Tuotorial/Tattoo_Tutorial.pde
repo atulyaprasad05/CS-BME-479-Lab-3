@@ -45,6 +45,13 @@ String message = "Waiting for input...";
 Serial port;
 Robot robot;
 
+import processing.serial.*;
+import java.awt.Robot;
+import java.awt.MouseInfo;
+import java.awt.Point;
+
+// ... names[], held[], moveSpeed, message, Serial port, Robot robot ...
+
 void setup() {
   size(1000, 640);
   frameRate(60);
@@ -57,16 +64,16 @@ void setup() {
     exit();
   }
 
-  printArray(Serial.list());
+  String[] ports = Serial.list();
   printArray(ports);
+
   if (ports.length > 0) {
+    // Change the index to match your Arduino in the printed list
+    // (on Windows "COMx", on Mac "/dev/cu.usbmodem..." or "/dev/cu.usbserial...")
     port = new Serial(this, ports[0], 115200);
     port.bufferUntil('\n');
   } else {
     println("No Arduino found - use keys 0-9 to test");
-  }
-  if (port == null) {
-    println("No Arduino - keyboard testing only (keys 0-9)");
   }
 }
 
@@ -96,6 +103,23 @@ void moveMouse() {
   }
 }
 
+void serialEvent(Serial p) {
+  String line = p.readStringUntil('\n');
+  if (line == null) return;
+
+  String[] parts = split(trim(line), ',');
+  if (parts.length == 0) return;
+
+  if (parts[0].equals("B") && parts.length == 3) {
+    int b = int(parts[1]);
+    boolean pressed = int(parts[2]) == 1;
+    buttonChanged(b, pressed);
+  } else if (parts[0].equals("F") && parts.length == 2) {
+    int flex = int(parts[1]);
+    // flex value not used yet in the tutorial
+  }
+}
+
 void buttonChanged(int b, boolean pressed) {
   if (b < 0 || b > 9) return;
   held[b] = pressed;
@@ -106,17 +130,6 @@ void buttonChanged(int b, boolean pressed) {
     message = "Button " + names[b] + " released";
   }
   println(message);
-}
-
-// Called when a full line arrives from the Arduino
-void serialEvent(Serial p) {
-  String line = p.readStringUntil('\n');
-  if (line == null) return;
-
-  String[] parts = split(trim(line), ',');
-  if (parts.length != 2) return;
-
-  buttonChanged(int(parts[0]), int(parts[1]) == 1);
 }
 
 // Keyboard testing: keys 0-9 act like the buttons
